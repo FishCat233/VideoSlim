@@ -122,11 +122,12 @@
    ```
 
 ### 构建
-项目提供了 `scripts/build.cmd` 自动化构建脚本，可一键生成单文件可执行程序：
+项目提供两个等价的自动化构建脚本（批处理 / PowerShell），可一键生成单文件可执行程序：
 
 ```bash
-# 在项目根目录运行
+# 在项目根目录运行（二选一）
 scripts/build.cmd
+pwsh scripts/build.ps1
 
 # 或者用 uv 运行
 uv run scripts/build.cmd
@@ -189,7 +190,8 @@ VideoSlim/
 │   └── LICENSE            # 第三方工具许可证
 ├── img/                   # 文档截图和资源
 ├── scripts/               # 辅助脚本
-│   └── build.cmd          # 自动化构建脚本
+│   ├── build.cmd          # 自动化构建脚本（批处理）
+│   └── build.ps1          # 自动化构建脚本（PowerShell）
 └── output/                # 构建输出目录
 ```
 

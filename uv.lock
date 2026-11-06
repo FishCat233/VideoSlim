@@ -439,7 +439,6 @@ dependencies = [
     { name = "pydantic" },
     { name = "pyside6" },
     { name = "requests" },
-    { name = "windnd" },
 ]
 
 [package.optional-dependencies]
@@ -455,14 +454,5 @@ requires-dist = [
     { name = "pyside6", specifier = ">=6.12.0" },
     { name = "requests", specifier = ">=2.32.5" },
     { name = "ruff", marker = "extra == 'dev'" },
-    { name = "windnd", specifier = ">=1.0.7" },
 ]
 provides-extras = ["dev"]
-
-[[package]]
-name = "windnd"
-version = "1.0.7"
-source = { registry = "https://pypi.org/simple" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/fe/6b/cb24d7638780a1d12e41b30839971e48048788ca54ec0e7f58a800a5e449/windnd-1.0.7-py3-none-any.whl", hash = "sha256:357ed0b00e801342a6997f851ee3d5185da2ad4827e0d404d16a2684006c0244", size = 4266, upload-time = "2020-08-17T04:11:11.359Z" },
-]

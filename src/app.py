@@ -12,7 +12,7 @@ from src.controller import Controller
 from src.model import message
 from src.service.message import MessageService
 from src.service.updater import UpdateService
-from src.view_qt import MainWindow
+from src.view import MainWindow
 
 
 class App(QtCore.QObject):

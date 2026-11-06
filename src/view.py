@@ -1,344 +1,434 @@
-import os
-import tkinter as tk
-import tkinter.ttk as ttk
-import webbrowser
-from queue import Queue
-from tkinter import END, NE, TOP, BooleanVar, StringVar, W, messagebox
+"""
+VideoSlim 的界面。
 
-import windnd
+用户操作统一以信号抛出，外部控制器 connect 后即可接管；界面状态由 set_* 方法写入。
+"""
+
+import os
+from typing import Callable, Optional
+
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from src import meta, utils
-from src.controller import Controller
-from src.model import message
-from src.service.message import MessageService
 
 
-class View:
-    """
-    VideoSlim应用程序的主视图类
+def local_paths(mime: QtCore.QMimeData) -> list[str]:
+    if not mime.hasUrls():
+        return []
 
-    负责创建和管理用户界面，处理用户交互，并显示应用程序的状态和结果。
-    实现了视频文件的拖拽功能、压缩控制和进度显示等核心功能。
-    """
+    paths = [url.toLocalFile() for url in mime.urls() if url.isLocalFile()]
+    return [path for path in paths if path]
 
-    def __init__(self, root: tk.Tk, controller: Controller):
-        """
-        初始化VideoSlim应用程序视图
 
-        Args:
-            root: Tkinter根窗口对象
-            controller: 控制器对象，用于处理业务逻辑
-        """
-        self.root = root
-        self.controller = controller
-        self.queue = Queue()
-        self.configs_name_list = []
-        self.configs_dict = {}
+class GithubLabel(QtWidgets.QLabel):
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__("github", parent)
 
-        self._setup_ui()
+        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet("color: #9aa0a6;")
+        self.setToolTip(meta.GITHUB_URL)
 
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl(meta.GITHUB_URL))
 
-        # Setup message queue checking
-        self.root.after(50, self._check_message_queue)
+        return super().mousePressEvent(event)
 
-    def _setup_ui(self):
-        """
-        设置应用程序的用户界面
 
-        创建并配置所有UI组件，包括窗口、按钮、文本框、复选框等，
-        设置窗口位置、大小、图标和拖拽功能。
-        """
-        # Configure root window
-        self.root.title(f"VideoSlim 视频压缩 {meta.VERSION}")
-        self.root.resizable(width=False, height=False)
+class FileListEdit(QtWidgets.QPlainTextEdit):
+    """用户输入的文件路径，一行一个"""
 
-        # Set icon if available
+    filesDropped = QtCore.Signal(list)
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent)
+
+        self.setAcceptDrops(True)
+        self.setPlaceholderText(
+            "把视频文件或文件夹拖到窗口里，也可以直接粘贴路径（一行一个）"
+        )
+        self.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+        self.setTabChangesFocus(True)
+
+    def dragEnterEvent(self, event: QtGui.QDragEnterEvent) -> None:
+        if local_paths(event.mimeData()):
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event: QtGui.QDragMoveEvent) -> None:
+        if local_paths(event.mimeData()):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QtGui.QDropEvent) -> None:
+        paths = local_paths(event.mimeData())
+        if not paths:
+            return
+
+        self.append_files(paths)
+        self.filesDropped.emit(paths)
+        event.acceptProposedAction()
+
+    def file_paths(self) -> list[str]:
+        text = self.toPlainText()
+        return [line.strip() for line in text.splitlines() if line.strip()]
+
+    def append_files(self, paths: list[str]) -> None:
+        if not paths:
+            return
+
+        if not self.toPlainText():
+            self.setPlainText("\n".join(paths))
+        else:
+            for path in paths:
+                self.appendPlainText(path)
+
+        # 光标停在末尾，用户接着粘贴时不必再挪
+        cursor = self.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
+        self.setTextCursor(cursor)
+        self.ensureCursorVisible()
+
+    def clear_files(self) -> None:
+        self.clear()
+
+
+class ProgressPanel(QtWidgets.QWidget):
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent)
+
+        self.current_bar = QtWidgets.QProgressBar()
+        self.current_bar.setRange(0, 100)
+        self.current_bar.setFormat("%p%")
+        self.current_bar.setMinimumHeight(18)
+
+        self.total_bar = QtWidgets.QProgressBar()
+        self.total_bar.setRange(0, 100)
+        self.total_bar.setFormat("0/0")
+        self.total_bar.setMinimumHeight(18)
+
+        l_progress = QtWidgets.QGridLayout(self)
+        l_progress.setContentsMargins(0, 0, 0, 0)
+        l_progress.setHorizontalSpacing(8)
+        l_progress.setVerticalSpacing(6)
+
+        l_progress.addWidget(QtWidgets.QLabel("当前文件"), 0, 0)
+        l_progress.addWidget(self.current_bar, 0, 1)
+        l_progress.addWidget(QtWidgets.QLabel("总进度"), 1, 0)
+        l_progress.addWidget(self.total_bar, 1, 1)
+
+        l_progress.setColumnStretch(1, 1)
+
+    def set_current_progress(self, value: float) -> None:
+        value = min(max(value, 0.0), 1.0)
+        self.current_bar.setValue(round(value * 100))
+
+    def set_total_progress(self, current: int, total: int) -> None:
+        if total <= 0:
+            self.total_bar.setValue(0)
+            self.total_bar.setFormat("0/0")
+            return
+
+        self.total_bar.setValue(round(current / total * 100))
+        self.total_bar.setFormat(f"{current}/{total}")
+
+    def reset(self) -> None:
+        self.current_bar.setValue(0)
+        self.total_bar.setValue(0)
+        self.total_bar.setFormat("0/0")
+
+
+class MainWindow(QtWidgets.QMainWindow):
+    """VideoSlim 主窗口"""
+
+    start_requested = QtCore.Signal()
+    stop_requested = QtCore.Signal()
+    clear_requested = QtCore.Signal()
+    files_dropped = QtCore.Signal(list)
+    config_changed = QtCore.Signal(str)
+    recurse_changed = QtCore.Signal(bool)
+    delete_source_changed = QtCore.Signal(bool)
+    delete_audio_changed = QtCore.Signal(bool)
+    update_check_requested = QtCore.Signal()
+    close_requested = QtCore.Signal()
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent)
+
+        # 关闭前检查钩子：返回 False 则取消关闭，例如有任务在跑时弹窗确认。
+        self.close_guard: Optional[Callable[[], bool]] = None
+
+        self.setWindowTitle(f"VideoSlim 视频压缩 {meta.VERSION}")
+        self.setWindowIcon(self._load_icon())
+        self.setMinimumSize(560, 380)
+        self.resize(620, 460)
+        self.setAcceptDrops(True)
+
+        self._build_menubar()
+
+        self.w_main = QtWidgets.QWidget()
+        self.l_main = QtWidgets.QVBoxLayout(self.w_main)
+        self.l_main.setContentsMargins(16, 12, 16, 10)
+        self.l_main.setSpacing(10)
+
+        self._build_header()
+        self._build_body()
+
+        self.setCentralWidget(self.w_main)
+        self._build_statusbar()
+
+        self.reset_progress()
+        self.set_running(False)
+        self._center_on_screen()
+
+    def _load_icon(self) -> QtGui.QIcon:
         icon_path = utils.get_path("./tools/icon.ico")
         if os.path.exists(icon_path):
-            self.root.iconbitmap(icon_path)
+            return QtGui.QIcon(icon_path)
+        return QtGui.QIcon()
 
-        # Center window on screen
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
-        window_width, window_height = 527, 351
-        position_x = (screen_width - window_width) // 2
-        position_y = (screen_height - window_height) // 2
-        self.root.geometry(f"{window_width}x{window_height}+{position_x}+{position_y}")
+    def _center_on_screen(self) -> None:
+        screen = QtGui.QGuiApplication.primaryScreen()
+        if screen is None:
+            return
 
-        # Create GitHub link
-        github_link = tk.Label(self.root, text="github", fg="#cdcdcd", cursor="hand2")
-        github_link.pack(side=TOP, anchor=NE, padx=25, pady=8)
-        github_link.bind(
-            "<Button-1>",
-            lambda event: webbrowser.open_new_tab(
-                "https://github.com/DongGuoZheng/VideoSlim"
-            ),
+        frame = self.frameGeometry()
+        frame.moveCenter(screen.availableGeometry().center())
+        self.move(frame.topLeft())
+
+    def _build_menubar(self) -> None:
+        menubar = self.menuBar()
+
+        menu_action = menubar.addMenu("操作")
+
+        self.action_start = menu_action.addAction("开始压缩")
+        self.action_start.setShortcut(QtGui.QKeySequence("Ctrl+Return"))
+        self.action_start.triggered.connect(lambda: self.start_requested.emit())
+
+        self.action_stop = menu_action.addAction("中止")
+        self.action_stop.setShortcut(QtGui.QKeySequence("Esc"))
+        self.action_stop.triggered.connect(lambda: self.stop_requested.emit())
+
+        self.action_clear = menu_action.addAction("清空列表")
+        self.action_clear.setShortcut(QtGui.QKeySequence("Ctrl+L"))
+        self.action_clear.triggered.connect(self.action_clear_list)
+
+        menu_action.addSeparator()
+
+        action_quit = menu_action.addAction("退出")
+        action_quit.setShortcut(QtGui.QKeySequence("Ctrl+Q"))
+        action_quit.triggered.connect(self.close)
+
+        menu_settings = menubar.addMenu("设置")
+
+        # 单选配置项由 set_config_names 运行时填充
+        self.menu_config = menu_settings.addMenu("参数配置")
+        self.config_group = QtGui.QActionGroup(self)
+        self.config_group.setExclusive(True)
+        self._build_config_placeholder()
+
+        menu_settings.addSeparator()
+
+        self.action_recursive = menu_settings.addAction("递归处理子文件夹")
+        self.action_recursive.setCheckable(True)
+        self.action_recursive.toggled.connect(
+            lambda checked: self.recurse_changed.emit(checked)
         )
 
-        # Title label
-        self.title_var = StringVar()
-        self.title_var.set("将视频拖拽到此窗口:")
-        self.title_label = tk.Label(self.root, textvariable=self.title_var, anchor=W)
-        self.title_label.place(x=26, y=8, width=380, height=24)
-
-        # File list text box
-        self.text_box = tk.Text(self.root, width=100, height=20)
-        self.text_box.place(x=24, y=40, width=480, height=190)
-
-        # Progress bar
-        self.cur_bar = ttk.Progressbar(self.root, orient="horizontal", maximum=100)
-        self.cur_bar.place(x=24, y=230, width=480, height=20)
-
-        self.total_bar = ttk.Progressbar(self.root, orient="horizontal", maximum=100)
-        self.total_bar.place(x=24, y=250, width=480, height=10)
-
-        # Compress button
-        compress_btn_text = StringVar()
-        compress_btn_text.set("压缩")
-        self.compress_btn = tk.Button(
-            self.root, textvariable=compress_btn_text, command=self._start_compression
+        self.action_delete_source = menu_settings.addAction("完成后删除旧文件")
+        self.action_delete_source.setCheckable(True)
+        self.action_delete_source.toggled.connect(
+            lambda checked: self.delete_source_changed.emit(checked)
         )
-        self.compress_btn.place(x=152, y=291, width=72, height=40)
 
-        # Terminate button
-        terminate_btn_text = StringVar()
-        terminate_btn_text.set("终止")
-        self.terminate_btn = tk.Button(
-            self.root,
-            textvariable=terminate_btn_text,
-            command=self._terminate_compression,
-            state=tk.DISABLED,
+        self.action_delete_audio = menu_settings.addAction("删除音频轨道")
+        self.action_delete_audio.setCheckable(True)
+        self.action_delete_audio.toggled.connect(
+            lambda checked: self.delete_audio_changed.emit(checked)
         )
-        self.terminate_btn.place(x=232, y=291, width=72, height=40)
 
-        # Clear button
-        clear_btn_text = StringVar()
-        clear_btn_text.set("清空")
-        clear_btn = tk.Button(
-            self.root, textvariable=clear_btn_text, command=self._clear_file_list
+        menu_help = menubar.addMenu("帮助")
+
+        action_home = menu_help.addAction("项目主页")
+        action_home.triggered.connect(
+            lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl(meta.GITHUB_URL))
         )
-        clear_btn.place(x=312, y=291, width=72, height=40)
 
-        # Options checkboxes
-        self.recurse_var = BooleanVar()
-        recurse_check = tk.Checkbutton(
-            self.root,
-            text="递归(至最深深度)子文件夹里面的视频",
-            variable=self.recurse_var,
-            onvalue=True,
-            offvalue=False,
+        action_update = menu_help.addAction("检查更新")
+        action_update.triggered.connect(lambda: self.update_check_requested.emit())
+
+        menu_help.addSeparator()
+
+        action_about = menu_help.addAction("关于 VideoSlim")
+        action_about.triggered.connect(self.show_about)
+
+    def _build_header(self) -> None:
+        w_header = QtWidgets.QWidget()
+        l_header = QtWidgets.QHBoxLayout(w_header)
+        l_header.setContentsMargins(0, 0, 0, 0)
+
+        title_label = QtWidgets.QLabel("将视频拖拽到此窗口:")
+        w_github = GithubLabel()
+
+        l_header.addWidget(title_label)
+        l_header.addStretch()
+        l_header.addWidget(w_github)
+
+        self.l_main.addWidget(w_header)
+
+    def _build_body(self) -> None:
+        self.file_list = FileListEdit()
+        self.file_list.filesDropped.connect(
+            lambda paths: self.files_dropped.emit(paths)
         )
-        recurse_check.place(x=20, y=261)
+        self.progress = ProgressPanel()
 
-        self.delete_source_var = BooleanVar()
-        delete_source_check = tk.Checkbutton(
-            self.root,
-            text="完成后删除旧文件",
-            variable=self.delete_source_var,
-            onvalue=True,
-            offvalue=False,
+        self.l_main.addWidget(self.file_list, 1)
+        self.l_main.addWidget(self.progress)
+
+    def _build_statusbar(self) -> None:
+        self.status_label = QtWidgets.QLabel("就绪")
+        self.config_label = QtWidgets.QLabel()
+
+        status_bar = self.statusBar()
+        status_bar.addWidget(self.status_label, 1)
+        status_bar.addPermanentWidget(self.config_label)
+
+        self.set_config_indicator(None)
+
+    def action_clear_list(self) -> None:
+        self.file_list.clear_files()
+        self.reset_progress()
+        self.set_status("就绪")
+        self.clear_requested.emit()
+
+    def show_about(self) -> None:
+        QtWidgets.QMessageBox.about(
+            self,
+            "关于 VideoSlim",
+            f"<b>VideoSlim</b> {meta.VERSION}<br>"
+            "简洁易用的 Windows 视频压缩工具<br><br>"
+            f"<a href='{meta.GITHUB_URL}'>{meta.GITHUB_URL}</a>",
         )
-        delete_source_check.place(x=20, y=287)
 
-        self.delete_audio_var = BooleanVar()
-        delete_audio_check = tk.Checkbutton(
-            self.root,
-            text="删除音频轨道",
-            variable=self.delete_audio_var,
-            onvalue=True,
-            offvalue=False,
-        )
-        delete_audio_check.place(x=20, y=313)
+    def _build_config_placeholder(self) -> None:
+        self.menu_config.clear()
 
-        # Setup drag and drop
-        # force_unicode=True 让 windnd 使用 Unicode (W) 版 Win32 API(DragQueryFileW)，
-        # 避免系统 ANSI 代码页无法表示的字符（如 emoji）被替换成 '?' 导致路径失效
-        windnd.hook_dropfiles(self.root, func=self._on_drop_files, force_unicode=True)
+        action_placeholder = self.menu_config.addAction("（尚未加载配置）")
+        action_placeholder.setEnabled(False)
 
-        # Configuration selection
-        config_label = tk.Label(self.root, text="选择参数配置")
-        config_label.place(x=388, y=265)
+    def set_config_names(self, names: list[str], current: Optional[str] = None) -> None:
+        for action in self.config_group.actions():
+            self.config_group.removeAction(action)
+        self.menu_config.clear()
 
-        self.select_config_name = StringVar(self.root, value="default")
-        self.config_combobox = ttk.Combobox(
-            self.root,
-            height=10,
-            width=10,
-            state="readonly",
-            values=[],
-            textvariable=self.select_config_name,
-        )
-        self.config_combobox.place(x=388, y=291)
+        if not names:
+            self._build_config_placeholder()
+            self.set_config_indicator(None)
+            return
 
-    def _on_drop_files(self, file_paths):
-        """
-        处理拖拽到应用程序中的文件
-
-        Args:
-            file_paths: 拖拽的文件路径列表（force_unicode=True 时为 str 列表）
-        """
-        files = "\n".join(file_paths)
-        self.text_box.insert(END, files + "\n")
-
-    def _on_close(self):
-        """
-        处理应用程序关闭事件
-
-        当用户点击关闭按钮时，会调用此方法。
-        该方法会发送一个退出消息到消息队列，通知其他组件应用程序正在关闭。
-        """
-        # 如果有正在处理的任务，提示用户确认是否继续
-        if self.controller.is_task_running():
-            response = messagebox.askyesno(
-                "确认", "当前有正在处理的任务，是否关闭程序？"
+        for name in names:
+            action = self.menu_config.addAction(name)
+            action.setCheckable(True)
+            action.setData(name)
+            action.triggered.connect(
+                lambda checked=False, name=name: self._on_config_selected(name)
             )
-            if not response:
-                return
+            self.config_group.addAction(action)
 
-        self.controller.close()
+        selected = current if current in names else names[0]
+        for action in self.config_group.actions():
+            action.setChecked(action.data() == selected)
 
-    def _terminate_compression(self):
-        """
-        终止当前正在进行的压缩任务
+        self.set_config_indicator(selected)
 
-        用户点击"终止"按钮时调用：立即结束当前 ffmpeg 进程，并不再处理列表中
-        尚未开始的文件。
-        """
-        if not self.controller.is_task_running():
-            self._update_button_states()
+    def _on_config_selected(self, name: str) -> None:
+        self.set_config_indicator(name)
+        self.config_changed.emit(name)
+
+    def current_config_name(self) -> Optional[str]:
+        for action in self.config_group.actions():
+            if action.isChecked():
+                return action.data()
+        return None
+
+    def set_config_indicator(self, name: Optional[str]) -> None:
+        self.config_label.setText(f"配置：{name}" if name else "配置：无")
+
+    def set_status(self, text: str) -> None:
+        self.status_label.setText(text)
+        self.status_label.setToolTip(text)
+
+    def set_running(self, running: bool) -> None:
+        self.action_start.setEnabled(not running)
+        self.action_stop.setEnabled(running)
+        self.action_clear.setEnabled(not running)
+        self.file_list.setReadOnly(running)
+
+    def recurse_enabled(self) -> bool:
+        return self.action_recursive.isChecked()
+
+    def delete_source_enabled(self) -> bool:
+        return self.action_delete_source.isChecked()
+
+    def delete_audio_enabled(self) -> bool:
+        return self.action_delete_audio.isChecked()
+
+    def set_current_progress(self, value: float) -> None:
+        self.progress.set_current_progress(value)
+
+    def set_total_progress(self, current: int, total: int) -> None:
+        self.progress.set_total_progress(current, total)
+
+    def reset_progress(self) -> None:
+        self.progress.reset()
+
+    def file_paths(self) -> list[str]:
+        return self.file_list.file_paths()
+
+    def add_files(self, paths: list[str]) -> None:
+        self.file_list.append_files(paths)
+
+    def dragEnterEvent(self, event: QtGui.QDragEnterEvent) -> None:
+        """拖到文件列表以外的空白处也能接收文件"""
+        if local_paths(event.mimeData()):
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event: QtGui.QDragMoveEvent) -> None:
+        if local_paths(event.mimeData()):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QtGui.QDropEvent) -> None:
+        paths = local_paths(event.mimeData())
+        if not paths:
             return
 
-        if not messagebox.askyesno("确认", "确定要终止当前的压缩任务吗？"):
+        self.add_files(paths)
+        self.files_dropped.emit(paths)
+        event.acceptProposedAction()
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        if self.close_guard is not None and not self.close_guard():
+            event.ignore()
             return
 
-        self.title_var.set("正在终止压缩任务…")
-        self.title_label.update()
-        self.controller.terminate()
-        self._update_button_states()
+        self.close_requested.emit()
+        event.accept()
 
-    def _update_button_states(self):
-        """
-        根据压缩任务是否在运行，切换"压缩"与"终止"按钮的可用状态
-        """
-        running = self.controller.is_task_running()
-        self.compress_btn.config(state=tk.DISABLED if running else tk.NORMAL)
-        self.terminate_btn.config(state=tk.NORMAL if running else tk.DISABLED)
+    def show_warning(self, title: str, text: str) -> None:
+        QtWidgets.QMessageBox.warning(self, title, text)
 
-    def _clear_file_list(self):
-        """
-        清空文件列表文本框
-        """
-        self.text_box.delete("1.0", END)
+    def show_error(self, title: str, text: str) -> None:
+        QtWidgets.QMessageBox.critical(self, title, text)
 
-    def _check_message_queue(self):
-        """
-        检查消息队列并处理接收到的消息
+    def show_info(self, title: str, text: str) -> None:
+        QtWidgets.QMessageBox.information(self, title, text)
 
-        定期检查应用程序的消息队列，根据消息类型执行相应的处理逻辑，
-        包括显示警告、错误、更新提示，处理压缩进度和完成消息等。
-        """
-
-        while True:
-            msg = MessageService.get_instance().try_receive_message()
-
-            match msg:
-                case None:
-                    break
-                case message.WarningMessage(title=t, message=m):
-                    # Display warning message
-                    messagebox.showwarning(t, m)
-                case message.UpdateMessage():
-                    # Update message box
-                    messagebox.showinfo("更新提示", "有新版本可用，请前往官网更新")
-                case message.ErrorMessage(title=t, message=m):
-                    # Display error message
-                    messagebox.showerror(t, m)
-                case message.ExitMessage():
-                    # Exit application
-                    self.root.destroy()
-                    return
-                case message.ConfigLoadMessage(config_names=config_names):
-                    # 将加载的配置显示在选项框，并自动选中第一个
-                    self.config_combobox.config(values=config_names)
-                    self.select_config_name.set(config_names[0])
-                case message.CompressionStartMessage():
-                    # 按钮状态由 _update_button_states 统一维护
-                    self.cur_bar["value"] = 0
-                    self.cur_bar.update()
-                    self.total_bar["value"] = 0
-                    self.total_bar.update()
-                case message.CompressionCurrentProgressMessage(
-                    file_name=_, current=current, total=total
-                ):
-                    self.cur_bar["value"] = current / total * 100
-                    self.cur_bar.update()
-                case message.CompressionTotalProgressMessage(
-                    current=current, total=total, file_name=file_name
-                ):
-                    # Update progress display
-                    self.title_var.set(
-                        f"[{current}/{total}] "
-                        f"当前处理文件：{file_name}，进度：{current / total * 100: .2f}%"
-                    )
-                    self.title_label.update()
-                    self.total_bar["value"] = (current / total) * 100
-                    self.total_bar.update()
-                case message.CompressionErrorMessage(title=t, message=m):
-                    # Display error message
-                    messagebox.showerror(t, m)
-                case message.CompressionFinishedMessage(total=total):
-                    # All files processed
-                    messagebox.showinfo("提示", "转换结束")
-                    self.title_var.set(f"处理完成！已经处理 {total} 个文件")
-                    self.title_label.update()
-
-                    self.cur_bar["value"] = 0
-                    self.cur_bar.update()
-                    self.total_bar["value"] = 100
-                    self.total_bar.update()
-                case message.CompressionStoppedMessage():
-                    # 用户终止了压缩任务
-                    messagebox.showinfo("提示", "已终止当前的压缩任务")
-                    self.title_var.set("压缩任务已终止")
-                    self.title_label.update()
-                    self.cur_bar["value"] = 0
-                    self.cur_bar.update()
-                case _:
-                    continue
-
-        # 同步按钮状态，并安排下一次检查
-        self._update_button_states()
-        self.root.after(1000, self._check_message_queue)
-
-    def _start_compression(self):
-        """
-        启动视频压缩过程
-
-        从UI获取用户选择的配置和选项，验证文件列表，然后调用控制器
-        开始视频压缩任务，并禁用压缩按钮以防止重复点击。
-        """
-        # Get selected configuration
-
-        config_name = self.select_config_name.get()
-        delete_source = self.delete_source_var.get()
-        delete_audio = self.delete_audio_var.get()
-        recurse = self.recurse_var.get()
-
-        # Get file list
-        text_content = self.text_box.get("1.0", END)
-        lines = [line for line in text_content.splitlines() if line.strip()]
-
-        if not lines:
-            messagebox.showwarning("提示", "请先拖拽文件到此处")
-            return
-
-        # 禁用按钮，防止重复点击
-        self.compress_btn.config(state=tk.DISABLED)
-
-        self.controller.compression(
-            config_name, delete_audio, delete_source, lines, recurse
+    def ask_confirm(self, title: str, text: str) -> bool:
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            title,
+            text,
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No,
         )
-
-        # 任务已开始，刷新按钮状态（终止按钮变为可用）
-        self._update_button_states()
+        return answer == QtWidgets.QMessageBox.StandardButton.Yes

@@ -1,8 +1,9 @@
-from src import utils
-
 """
 VideoSlim 应用程序常量定义
 """
+
+from src import utils
+
 
 # 应用程序版本号
 VERSION = "v2.1.0"
@@ -24,6 +25,9 @@ LOG_DIR = "log"
 
 # 临时文件路径列表
 TEMP_FILES = ["./pre_temp.mp4"]
+
+# 项目地址
+GITHUB_URL = "https://github.com/DongGuoZheng/VideoSlim"
 
 
 def get_ffmpeg_path() -> str:

@@ -45,7 +45,7 @@ class UpdateService:
         return UpdateService._instance
 
     @staticmethod
-    def check_for_updates():
+    def check_for_updates() -> bool:
         """
         检查是否有新版本更新
 
@@ -57,6 +57,9 @@ class UpdateService:
 
         使用requests库发送HTTP请求获取最新版本信息，
         超时时间设置为10秒。如果检查失败，会记录警告日志。
+
+        Returns:
+            bool: 发现新版本时返回 True；已是最新或检查失败时返回 False
         """
         message_service = MessageService.get_instance()
         try:
@@ -69,8 +72,11 @@ class UpdateService:
                     meta.VERSION, latest_release["tag_name"]
                 ):
                     message_service.send_message(UpdateMessage())
+                    return True
+            return False
         except Exception as e:
             logging.warning(f"检查更新失败: {e}")
+            return False
 
     @staticmethod
     def is_new_version(current_version: str, latest_version: str) -> bool:

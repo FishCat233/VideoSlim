@@ -4,7 +4,12 @@ version = "2.1.0"
 description = "简洁易用的 Windows 视频压缩工具"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["pydantic>=2.12.5", "requests>=2.32.5", "windnd>=1.0.7"]
+dependencies = [
+    "pydantic>=2.12.5",
+    "pyside6>=6.12.0",
+    "requests>=2.32.5",
+    "windnd>=1.0.7",
+]
 
 [project.optional-dependencies]
 dev = ["ruff", "pyinstaller"]

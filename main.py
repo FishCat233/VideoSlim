@@ -2,18 +2,20 @@
 # -*- coding: utf-8 -*-
 """
 VideoSlim - A video compression application using x264
-Refactored version: v1.8
 """
 
 import datetime
 import logging
 import os
-import tkinter as tk
+import sys
+
+from PySide6 import QtWidgets
 
 from src import meta
+from src.app import App
 from src.controller import Controller
 from src.service import init_services
-from src.view import View
+from src.view_qt import MainWindow
 
 
 def setup_logging():
@@ -39,23 +41,19 @@ def setup_logging():
 
 
 def main():
-    """
-    应用程序的主入口函数
-
-    该函数会：
-    1. 配置日志记录系统
-    2. 初始化所有服务（配置、消息、存储、更新）
-    3. 创建Tkinter根窗口
-    4. 初始化视图和控制器
-    5. 启动Tkinter主事件循环
-    """
+    """应用程序的主入口"""
     setup_logging()
 
     init_services()
 
-    root = tk.Tk()
-    app = View(root, Controller())
-    root.mainloop()
+    app = QtWidgets.QApplication([])
+    app.setApplicationName("VideoSlim")
+
+    window = MainWindow()
+    App(window, Controller())
+    window.show()
+
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":

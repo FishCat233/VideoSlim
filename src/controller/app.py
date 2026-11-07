@@ -5,13 +5,16 @@
 import logging
 import os
 import threading
+from typing import Optional
 
 from PySide6 import QtCore, QtWidgets
 
-from src.controller import Controller
+from src.controller.task import TaskRunner
 from src.model import message
 from src.service.message import MessageService
+from src.service.store import StoreService
 from src.service.updater import UpdateService
+from src.service.video import VideoService
 from src.view import MainWindow
 
 
@@ -22,11 +25,13 @@ class App(QtCore.QObject):
     # 消息队列轮询间隔（毫秒）
     MESSAGE_POLL_INTERVAL = 100
 
-    def __init__(self, window: MainWindow, controller: Controller) -> None:
+    def __init__(
+        self, window: MainWindow, task_runner: Optional[TaskRunner] = None
+    ) -> None:
         super().__init__(window)
 
         self.window = window
-        self.controller = controller
+        self.task_runner = task_runner if task_runner else TaskRunner()
 
         # 防止消息框里的嵌套事件循环重复进入轮询
         self._polling = False
@@ -48,7 +53,7 @@ class App(QtCore.QObject):
         self.update_checked.connect(self._on_update_checked)
 
     def _on_start(self) -> None:
-        if self.controller.is_task_running():
+        if self.task_runner.is_running():
             return
 
         config_name = self.window.current_config_name()
@@ -66,7 +71,7 @@ class App(QtCore.QObject):
         self.window.set_status(f"共 {len(file_paths)} 个目标，正在解析视频…")
 
         try:
-            self.controller.compression(
+            self.task_runner.start(
                 config_name=config_name,
                 delete_audio=self.window.delete_audio_enabled(),
                 delete_source=self.window.delete_source_enabled(),
@@ -79,7 +84,7 @@ class App(QtCore.QObject):
             self.window.show_error("错误", f"启动压缩任务失败：{e}")
 
     def _on_stop(self) -> None:
-        if not self.controller.is_task_running():
+        if not self.task_runner.is_running():
             self.window.set_running(False)
             return
 
@@ -87,8 +92,22 @@ class App(QtCore.QObject):
             return
 
         self.window.set_status("正在终止压缩任务…")
-        self.controller.terminate()
+        self.task_runner.stop()
         self.window.set_running(False)
+
+    def shutdown(self):
+        """
+        关闭应用程序
+
+        1. 停止所有视频处理任务
+        2. 清理临时文件
+        3. 发送退出消息通知视图关闭
+        4.  dump 配置到文件
+        """
+        VideoService.get_instance().stop_process()
+        VideoService.get_instance().clean_temp_files()
+        MessageService.get_instance().send_message(message.ExitMessage())
+        StoreService.get_instance().dump()
 
     def _on_check_update(self) -> None:
         self.window.set_status("正在检查更新…")
@@ -105,7 +124,7 @@ class App(QtCore.QObject):
             self.window.set_status("当前已是最新版本")
 
     def _confirm_close(self) -> bool:
-        if not self.controller.is_task_running():
+        if not self.task_runner.is_running():
             return True
 
         return self.window.ask_confirm("确认", "当前有正在处理的任务，是否关闭程序？")
@@ -117,7 +136,7 @@ class App(QtCore.QObject):
         self._closed = True
         self._timer.stop()
         logging.info("窗口关闭，开始收尾")
-        self.controller.close()
+        self.shutdown()
 
     def _poll_messages(self) -> None:
         if self._polling:
@@ -130,7 +149,7 @@ class App(QtCore.QObject):
             self._polling = False
 
         # 兜底同步：任务线程自己结束时不一定还有消息可刷
-        self.window.set_running(self.controller.is_task_running())
+        self.window.set_running(self.task_runner.is_running())
 
     def _drain_messages(self) -> None:
         service = MessageService.get_instance()

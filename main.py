@@ -12,8 +12,7 @@ import sys
 from PySide6 import QtWidgets
 
 from src import meta
-from src.app import App
-from src.controller import Controller
+from src.controller.app import App
 from src.service import init_services
 from src.view import MainWindow
 
@@ -45,7 +44,7 @@ def main():
     app.setApplicationName("VideoSlim")
 
     window = MainWindow()
-    App(window, Controller())
+    App(window)
     window.show()
 
     sys.exit(app.exec())
